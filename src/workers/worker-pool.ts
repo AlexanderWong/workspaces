@@ -1,3 +1,9 @@
+/**
+ * Background worker pool — pulls job IDs from the queue and processes them.
+ *
+ * Spawns WORKER_CONCURRENCY independent async loops. Each loop:
+ *   dequeue → markRunning → process → markCompleted | markFailed
+ */
 import type { Env } from '../config/env';
 import type { JobProcessor } from './job.processor';
 import type { JobQueue, JobRepository } from '../types/job';
@@ -30,11 +36,12 @@ export class WorkerPool {
     await Promise.allSettled(this.workerTasks);
   }
 
+  /** Continuous loop — exits when stop() sets running = false */
   private async runWorker(workerId: number): Promise<void> {
     while (this.running) {
       const jobId = await this.queue.dequeue(this.config.WORKER_POLL_INTERVAL_MS);
       if (!jobId) {
-        continue;
+        continue; // poll timeout — try again
       }
 
       await this.processJob(jobId, workerId);
@@ -44,7 +51,7 @@ export class WorkerPool {
   private async processJob(jobId: string, workerId: number): Promise<void> {
     const job = await this.repository.markRunning(jobId);
     if (!job) {
-      return;
+      return; // already claimed or invalid state — skip
     }
 
     try {

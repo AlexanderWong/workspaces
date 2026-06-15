@@ -1,3 +1,11 @@
+/**
+ * Application bootstrap — wires HTTP routes, shared dependencies, and the worker pool.
+ *
+ * Request flow:  routes → controllers → services → repository / queue
+ * Background flow: worker pool → queue → processor → repository
+ *
+ * Dependencies can be injected for tests (see AppDependencies).
+ */
 import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
@@ -36,6 +44,7 @@ export function createApp(
 
   app.use(createHealthRouter());
 
+  // Shared instances used by both HTTP handlers and background workers
   const jobRepository = dependencies.jobRepository ?? new InMemoryJobRepository();
   const jobQueue = dependencies.jobQueue ?? new InMemoryJobQueue();
   const jobService = new JobService(jobRepository, jobQueue);
@@ -55,6 +64,7 @@ export function createApp(
       config,
     );
 
+  // Workers are disabled in tests so each test can control start/stop timing
   const shouldStartWorkers = dependencies.startWorkers ?? config.NODE_ENV !== 'test';
   if (shouldStartWorkers) {
     workerPool.start();

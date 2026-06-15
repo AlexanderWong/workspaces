@@ -1,3 +1,4 @@
+/** Job API routes — validation schemas live here, close to the HTTP boundary. */
 import { Router } from 'express';
 import { z } from 'zod';
 import type { JobController } from '../controllers/job.controller';

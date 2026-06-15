@@ -1,3 +1,10 @@
+/**
+ * In-memory job store with mutex-protected reads and writes.
+ *
+ * HTTP handlers and workers share this store concurrently. Every operation
+ * runs inside AsyncMutex.runExclusive() to prevent interleaved updates.
+ * Status guards (e.g. only queued → running) prevent invalid transitions.
+ */
 import { randomUUID } from 'crypto';
 import { AsyncMutex } from '../concurrency/async-mutex';
 import type { Job, JobPayload, JobRepository, JobResult } from '../types/job';
@@ -30,6 +37,7 @@ export class InMemoryJobRepository implements JobRepository {
     return this.mutex.runExclusive(() => this.jobs.get(id) ?? null);
   }
 
+  /** Returns null if the job is not in queued state (prevents double-processing). */
   async markRunning(id: string): Promise<Job | null> {
     return this.mutex.runExclusive(() => {
       const job = this.jobs.get(id);

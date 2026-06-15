@@ -1,3 +1,4 @@
+/** Shared test overrides — shorter sleep/poll intervals so tests finish quickly. */
 import { env } from '../../src/config/env';
 
 export const testConfig = {

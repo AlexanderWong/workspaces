@@ -1,3 +1,7 @@
+/**
+ * Business logic — orchestrates job submission and lookup.
+ * Does not perform processing; that is the worker pool's responsibility.
+ */
 import { NotFoundError } from '../errors/app-error';
 import type { Job, JobPayload, JobQueue, JobRepository } from '../types/job';
 
@@ -7,6 +11,10 @@ export class JobService {
     private readonly queue: JobQueue,
   ) {}
 
+  /**
+   * Persist the job, enqueue for background processing, and return immediately.
+   * The HTTP caller gets back before any worker picks up the job.
+   */
   async submitJob(payload: JobPayload): Promise<Job> {
     const job = await this.repository.create(payload);
     await this.queue.enqueue(job.id);

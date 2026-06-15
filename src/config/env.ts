@@ -1,3 +1,4 @@
+/** Typed, validated environment config loaded once at startup. */
 import { z } from 'zod';
 
 const envSchema = z.object({
@@ -24,4 +25,5 @@ function loadEnv(): Env {
   return result.data;
 }
 
+/** Singleton config — import this rather than reading process.env directly. */
 export const env = loadEnv();

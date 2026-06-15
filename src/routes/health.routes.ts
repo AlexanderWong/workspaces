@@ -1,3 +1,4 @@
+/** Health check for load balancers and DigitalOcean App Platform probes. */
 import { Router } from 'express';
 
 export function createHealthRouter(): Router {

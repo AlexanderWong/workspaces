@@ -1,3 +1,4 @@
+/** Validates and coerces req.body / params / query with Zod before the handler runs. */
 import type { RequestHandler } from 'express';
 import type { ZodSchema } from 'zod';
 

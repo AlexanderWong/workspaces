@@ -1,3 +1,7 @@
+/**
+ * HTTP layer — maps requests/responses only; no business logic here.
+ * Delegates to JobService for all job operations.
+ */
 import type { Request, Response } from 'express';
 import type { JobService } from '../services/job.service';
 
@@ -6,6 +10,7 @@ export class JobController {
 
   submit = async (req: Request, res: Response): Promise<void> => {
     const job = await this.jobService.submitJob(req.body);
+    // 202 Accepted: job is queued but processing has not finished
     res.status(202).json({
       data: {
         id: job.id,

@@ -1,3 +1,10 @@
+/**
+ * FIFO job queue that decouples HTTP submission from worker processing.
+ *
+ * Uses a waiter pattern: if a worker is blocked on dequeue, enqueue delivers
+ * the job directly to that worker instead of pushing to the pending array.
+ * All shared-state access is mutex-protected.
+ */
 import { AsyncMutex } from '../concurrency/async-mutex';
 import type { JobQueue } from '../types/job';
 
@@ -12,6 +19,7 @@ export class InMemoryJobQueue implements JobQueue {
     await this.mutex.runExclusive(async () => {
       const waiter = this.waiters.shift();
       if (waiter) {
+        // A worker is already waiting — hand off directly
         waiter(jobId);
         return;
       }
@@ -20,12 +28,17 @@ export class InMemoryJobQueue implements JobQueue {
     });
   }
 
+  /**
+   * Returns the next job ID, or null after timeoutMs if the queue is empty.
+   * Workers call this in a loop with a short poll interval.
+   */
   async dequeue(timeoutMs: number): Promise<string | null> {
     const immediate = await this.mutex.runExclusive(async () => this.pending.shift() ?? null);
     if (immediate) {
       return immediate;
     }
 
+    // No jobs available — register a waiter and block until enqueue or timeout
     return new Promise((resolve) => {
       let settled = false;
 
@@ -41,6 +54,7 @@ export class InMemoryJobQueue implements JobQueue {
       const timeout = setTimeout(() => finish(null), timeoutMs);
 
       void this.mutex.runExclusive(async () => {
+        // Re-check pending in case a job arrived between the first check and now
         const available = this.pending.shift();
         if (available) {
           finish(available);

@@ -1,3 +1,13 @@
+/**
+ * Domain types and interfaces for the job queue system.
+ *
+ * Status lifecycle: queued → running → completed | failed
+ *
+ * Repository and Queue are interfaces so implementations can be swapped
+ * (e.g. in-memory → Redis/PostgreSQL) without changing services or workers.
+ */
+
+/** Valid job states — transitions are enforced in InMemoryJobRepository */
 export const JOB_STATUSES = ['queued', 'running', 'completed', 'failed'] as const;
 
 export type JobStatus = (typeof JOB_STATUSES)[number];
@@ -35,6 +45,7 @@ export interface JobSummary {
   status: JobStatus;
 }
 
+/** Persistence contract — all state transitions go through explicit mark* methods */
 export interface JobRepository {
   create(payload: JobPayload): Promise<Job>;
   findById(id: string): Promise<Job | null>;
@@ -43,6 +54,7 @@ export interface JobRepository {
   markFailed(id: string, error: string): Promise<Job | null>;
 }
 
+/** Async handoff between HTTP submission and background workers */
 export interface JobQueue {
   enqueue(jobId: string): Promise<void>;
   dequeue(timeoutMs: number): Promise<string | null>;

@@ -1,3 +1,9 @@
+/**
+ * Job processor — executes the actual work for a queued job.
+ *
+ * MockJobProcessor simulates work with a sleep. Swap this implementation
+ * (via the JobProcessor interface) for real workloads without changing workers.
+ */
 import type { Env } from '../config/env';
 import type { JobPayload, JobResult } from '../types/job';
 

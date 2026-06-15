@@ -1,3 +1,7 @@
+/**
+ * Centralized error formatting — all API errors follow { error: { code, message } }.
+ * Register notFoundHandler after routes; errorHandler must be last.
+ */
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError } from 'zod';
 import { AppError } from '../errors/app-error';

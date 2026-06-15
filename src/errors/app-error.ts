@@ -1,3 +1,7 @@
+/**
+ * Typed HTTP errors with consistent JSON shape.
+ * Throw these from services; errorHandler converts them to responses.
+ */
 export interface ApiErrorBody {
   error: {
     code: string;
