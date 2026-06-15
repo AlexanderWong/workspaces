@@ -29,31 +29,31 @@ sequenceDiagram
     participant Worker as Worker Pool
     participant Processor as Mock Processor
 
-    Client->>HTTP: POST /api/v1/jobs { payload }
+    Client->>HTTP: POST /api/v1/jobs payload
     HTTP->>Controller: submit(req.body)
     Controller->>Service: submitJob(payload)
-    Service->>Repo: create(payload) → status: queued
+    Service->>Repo: create(payload), status queued
     Service->>Queue: enqueue(jobId)
     Service-->>Controller: job
-    Controller-->>Client: 202 { id, status, retryCount, maxRetries }
+    Controller-->>Client: 202 Accepted with job id and status
 
-    Note over Repo,Queue: In-memory locally; Redis when REDIS_URL is set
+    Note over Repo,Queue: In-memory locally, Redis when REDIS_URL is set
     Note over Worker,Processor: Decoupled background execution
 
-    loop Each worker (concurrency N)
+    loop Each worker concurrency N
         Worker->>Queue: dequeue(pollIntervalMs)
-        Queue-->>Worker: jobId | null
+        Queue-->>Worker: jobId or null
         Worker->>Repo: markRunning(jobId)
         Worker->>Processor: process(job.payload)
         alt Success
             Processor-->>Worker: result
             Worker->>Repo: markCompleted(jobId, result)
-        else Transient failure (retries remaining)
+        else Transient failure retries remaining
             Processor-->>Worker: TransientProcessingError
             Worker->>Repo: requeueForRetry(jobId)
-            Note over Worker: backoff (RETRY_BACKOFF_MS)
+            Note over Worker: backoff RETRY_BACKOFF_MS
             Worker->>Queue: enqueue(jobId)
-        else Permanent failure / max retries exceeded
+        else Permanent failure or max retries exceeded
             Processor-->>Worker: error
             Worker->>Repo: markFailed(jobId, error)
         end
@@ -65,7 +65,7 @@ sequenceDiagram
     Service->>Repo: findById(id)
     Repo-->>Service: job
     Service-->>Controller: job
-    Controller-->>Client: 200 { status, result | error }
+    Controller-->>Client: 200 status result or error
 ```
 
 ### Layer responsibilities
