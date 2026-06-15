@@ -41,27 +41,40 @@ export class InMemoryJobQueue implements JobQueue {
     // No jobs available — register a waiter and block until enqueue or timeout
     return new Promise((resolve) => {
       let settled = false;
+      let waiter: QueueWaiter | undefined;
 
       const finish = (jobId: string | null) => {
         if (settled) {
           return;
         }
         settled = true;
-        clearTimeout(timeout);
+        clearTimeout(timeoutHandle);
         resolve(jobId);
       };
 
-      const timeout = setTimeout(() => finish(null), timeoutMs);
+      const timeoutHandle = setTimeout(() => {
+        void this.mutex.runExclusive(async () => {
+          if (waiter) {
+            const index = this.waiters.indexOf(waiter);
+            if (index >= 0) {
+              this.waiters.splice(index, 1);
+            }
+          }
+          finish(null);
+        });
+      }, timeoutMs);
 
       void this.mutex.runExclusive(async () => {
         // Re-check pending in case a job arrived between the first check and now
         const available = this.pending.shift();
         if (available) {
+          clearTimeout(timeoutHandle);
           finish(available);
           return;
         }
 
-        this.waiters.push((jobId) => finish(jobId));
+        waiter = (jobId: string) => finish(jobId);
+        this.waiters.push(waiter);
       });
     });
   }
