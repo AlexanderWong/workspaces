@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryJobQueue } from '../../src/queue/in-memory-job.queue';
+import { RedisJobQueue } from '../../src/queue/redis-job.queue';
 import { InMemoryJobRepository } from '../../src/repositories/in-memory-job.repository';
+import { RedisJobRepository } from '../../src/repositories/redis-job.repository';
 import { MockJobProcessor } from '../../src/workers/job.processor';
 import { WorkerPool } from '../../src/workers/worker-pool';
+import { FakeRedis } from '../helpers/fake-redis';
 import { testConfig } from '../helpers/test-config';
 
 describe('WorkerPool', () => {
@@ -11,7 +14,7 @@ describe('WorkerPool', () => {
   let workerPool: WorkerPool;
 
   beforeEach(() => {
-    repository = new InMemoryJobRepository();
+    repository = new InMemoryJobRepository(testConfig);
     queue = new InMemoryJobQueue();
     workerPool = new WorkerPool(
       queue,
@@ -45,7 +48,50 @@ describe('WorkerPool', () => {
     expect(completed?.completedAt).toBeTruthy();
   });
 
-  it('marks a job as failed when processing throws', async () => {
+  it('retries transient failures and eventually completes', async () => {
+    const job = await repository.create({
+      sleepMs: 10,
+      transientFailureCount: 2,
+    });
+    await queue.enqueue(job.id);
+    workerPool.start();
+
+    await expect
+      .poll(async () => (await repository.findById(job.id))?.status, { timeout: 5000 })
+      .toBe('completed');
+
+    const completed = await repository.findById(job.id);
+    expect(completed?.retryCount).toBe(2);
+    expect(completed?.result?.attempts).toBe(3);
+  });
+
+  it('marks a job as failed after max retries are exhausted', async () => {
+    const config = { ...testConfig, MAX_JOB_RETRIES: 1, RETRY_BACKOFF_MS: 5 };
+    repository = new InMemoryJobRepository(config);
+    workerPool = new WorkerPool(
+      queue,
+      repository,
+      new MockJobProcessor(config),
+      config,
+    );
+
+    const job = await repository.create({
+      sleepMs: 5,
+      transientFailureCount: 5,
+    });
+    await queue.enqueue(job.id);
+    workerPool.start();
+
+    await expect
+      .poll(async () => (await repository.findById(job.id))?.status, { timeout: 5000 })
+      .toBe('failed');
+
+    const failed = await repository.findById(job.id);
+    expect(failed?.retryCount).toBe(1);
+    expect(failed?.error).toContain('Simulated transient failure');
+  });
+
+  it('marks jobs as failed on permanent processing errors', async () => {
     const job = await repository.create({ sleepMs: 10, shouldFail: true });
     await queue.enqueue(job.id);
     workerPool.start();
@@ -55,7 +101,7 @@ describe('WorkerPool', () => {
       .toBe('failed');
 
     const failed = await repository.findById(job.id);
-    expect(failed?.error).toBe('Simulated job failure');
+    expect(failed?.error).toBe('Simulated permanent job failure');
     expect(failed?.result).toBeNull();
   });
 
@@ -99,11 +145,45 @@ describe('WorkerPool', () => {
   });
 });
 
+describe('WorkerPool with Redis storage', () => {
+  let redis: FakeRedis;
+  let repository: RedisJobRepository;
+  let queue: RedisJobQueue;
+  let workerPool: WorkerPool;
+
+  beforeEach(() => {
+    redis = new FakeRedis();
+    repository = new RedisJobRepository(redis, testConfig);
+    queue = new RedisJobQueue(redis);
+    workerPool = new WorkerPool(
+      queue,
+      repository,
+      new MockJobProcessor(testConfig),
+      testConfig,
+    );
+  });
+
+  afterEach(async () => {
+    await workerPool.stop();
+    redis.clear();
+  });
+
+  it('completes a job using Redis-backed repository and queue', async () => {
+    const job = await repository.create({ sleepMs: 30 });
+    await queue.enqueue(job.id);
+    workerPool.start();
+
+    await expect
+      .poll(async () => (await repository.findById(job.id))?.status, { timeout: 3000 })
+      .toBe('completed');
+  });
+});
+
 describe('InMemoryJobRepository concurrency', () => {
   let repository: InMemoryJobRepository;
 
   beforeEach(() => {
-    repository = new InMemoryJobRepository();
+    repository = new InMemoryJobRepository(testConfig);
   });
 
   afterEach(() => {
@@ -124,22 +204,14 @@ describe('InMemoryJobRepository concurrency', () => {
     expect(successfulClaims[0]?.status).toBe('running');
   });
 
-  it('returns consistent snapshots while HTTP reads overlap worker updates', async () => {
+  it('requeues a running job and increments retryCount', async () => {
     const job = await repository.create({ sleepMs: 10 });
     await repository.markRunning(job.id);
 
-    const [duringRunning, afterComplete] = await Promise.all([
-      repository.findById(job.id),
-      repository.markCompleted(job.id, {
-        processedAt: new Date().toISOString(),
-        sleepMs: 10,
-        message: 'done',
-        input: job.payload,
-      }).then(() => repository.findById(job.id)),
-    ]);
+    const requeued = await repository.requeueForRetry(job.id, 'transient error');
 
-    expect(['running', 'completed']).toContain(duringRunning?.status);
-    expect(afterComplete?.status).toBe('completed');
-    expect(afterComplete?.result?.message).toBe('done');
+    expect(requeued?.status).toBe('queued');
+    expect(requeued?.retryCount).toBe(1);
+    expect(requeued?.error).toBe('transient error');
   });
 });

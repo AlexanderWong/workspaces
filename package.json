@@ -10,9 +10,12 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "start:api": "WORKERS_ENABLED=false node dist/server.js",
+    "start:worker": "node dist/worker.js",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
+    "test:redis": "vitest run tests/unit/redis-job.repository.test.ts tests/unit/redis-job.queue.test.ts tests/integration/redis-jobs.test.ts tests/unit/storage.test.ts",
     "test:watch": "vitest",
     "lint": "eslint src tests --ext .ts",
     "typecheck": "tsc --noEmit"
@@ -23,6 +26,7 @@
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "helmet": "^8.0.0",
+    "ioredis": "^5.6.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {

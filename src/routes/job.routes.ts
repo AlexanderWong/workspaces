@@ -12,6 +12,7 @@ const idParamSchema = z.object({
 const submitJobSchema = z.object({
   sleepMs: z.number().int().positive().max(60_000).optional(),
   shouldFail: z.boolean().optional(),
+  transientFailureCount: z.number().int().nonnegative().max(10).optional(),
   data: z.record(z.unknown()).optional(),
 });
 

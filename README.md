@@ -11,7 +11,8 @@ Designed for deployment to **GitHub** (with CI) and **DigitalOcean App Platform*
 - **Status API** — `GET /api/v1/jobs/:id` returns `queued`, `running`, `completed`, or `failed` plus result/error
 - **Health check** — `GET /health` for load balancers and App Platform probes
 - **Concurrency control** — mutex-protected job state and queue operations
-- **CI/CD** — GitHub Actions runs typecheck, lint, tests, and build on every push/PR
+- **Automated retries** — transient failures are retried with configurable backoff; permanent failures fail immediately
+- **Split deployment** — API and worker run as separate DigitalOcean components sharing Redis
 
 ## Architecture
 
@@ -45,6 +46,12 @@ sequenceDiagram
         Worker->>Processor: process(payload)
         Processor-->>Worker: result (after sleep)
         Worker->>Repo: markCompleted(jobId, result)
+        alt Transient failure
+            Worker->>Repo: requeueForRetry(jobId)
+            Worker->>Queue: enqueue(jobId)
+        else Permanent failure / max retries
+            Worker->>Repo: markFailed(jobId, error)
+        end
     end
 
     Client->>HTTP: GET /api/v1/jobs/:id
@@ -100,8 +107,26 @@ Content-Type: application/json
 | Field | Type | Description |
 |-------|------|-------------|
 | `sleepMs` | number (optional) | Simulated work duration in ms (default: `1000`) |
-| `shouldFail` | boolean (optional) | Force failure for testing |
+| `shouldFail` | boolean (optional) | Permanent failure (not retried) |
+| `transientFailureCount` | number (optional) | Simulate N transient failures before success (for testing retries) |
 | `data` | object (optional) | Arbitrary payload echoed in the result |
+
+### Retry behavior
+
+When the processor throws a `TransientProcessingError`:
+
+1. Worker increments `retryCount` and resets status to `queued`
+2. Waits `RETRY_BACKOFF_MS`, then re-enqueues the job
+3. Repeats until success or `retryCount > maxRetries` (then marks `failed`)
+
+Permanent errors (`shouldFail: true`) skip retries and fail immediately.
+
+```bash
+# Simulate 2 transient failures before succeeding (requires MAX_JOB_RETRIES >= 2)
+curl -X POST http://localhost:8080/api/v1/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"sleepMs": 500, "transientFailureCount": 2}'
+```
 
 ### Get job status
 
@@ -158,11 +183,21 @@ npm run dev
 
 Server runs at `http://localhost:8080` with hot reload.
 
-### Production
+### Production (single process — local)
 
 ```bash
 npm run build
-npm start
+npm start          # API + embedded workers (in-memory storage)
+```
+
+### Production (split API + worker — requires Redis)
+
+```bash
+export REDIS_URL=redis://localhost:6379
+
+npm run build
+npm run start:api     # HTTP only, WORKERS_ENABLED=false
+npm run start:worker  # background workers only
 ```
 
 ### Example workflow
@@ -183,7 +218,9 @@ curl http://localhost:8080/api/v1/jobs/JOB_ID
 |---------|-------------|
 | `npm run dev` | Start dev server with hot reload |
 | `npm run build` | Compile TypeScript to `dist/` |
-| `npm start` | Run production build |
+| `npm start` | Run API with embedded workers (local/single-instance) |
+| `npm run start:api` | Run HTTP API only (no workers) |
+| `npm run start:worker` | Run worker process only (requires `REDIS_URL`) |
 | `npm test` | Run all tests (unit + integration) |
 | `npm run test:unit` | Run worker/repository unit tests |
 | `npm run test:integration` | Run HTTP API integration tests |
@@ -197,13 +234,18 @@ Tests are split by scope:
 | Suite | Location | Covers |
 |-------|----------|--------|
 | Unit | `tests/unit/` | Worker pool lifecycle, processor mock logic, repository concurrency |
+| Unit (Redis) | `tests/unit/redis-*.test.ts`, `storage.test.ts` | Redis repository, queue, storage factory, failure injection |
 | Integration | `tests/integration/` | Full HTTP request/response flow via supertest |
+| Integration (Redis) | `tests/integration/redis-jobs.test.ts` | Split API + worker sharing FakeRedis (simulates DO production) |
 
 ```bash
 npm test                 # all tests
 npm run test:unit        # unit only
 npm run test:integration # integration only
+npm run test:redis       # Redis-specific tests only
 ```
+
+Redis tests use `FakeRedis` (in-memory stand-in) so CI does not require a live Redis server. Optional: run against real Redis locally with `REDIS_URL=redis://localhost:6379`.
 
 ## CI/CD
 
@@ -225,30 +267,67 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request 
 | `WORKER_CONCURRENCY` | `2` | Number of concurrent background workers |
 | `WORKER_POLL_INTERVAL_MS` | `250` | Queue poll interval when idle |
 | `DEFAULT_JOB_SLEEP_MS` | `1000` | Default simulated work duration |
+| `MAX_JOB_RETRIES` | `3` | Max automatic retries for transient failures |
+| `RETRY_BACKOFF_MS` | `1000` | Delay before re-enqueueing a failed job |
+| `WORKERS_ENABLED` | `true` | Set `false` on API service when workers run separately |
+| `REDIS_URL` | — | Redis URL (required for split API/worker deployment) |
 
 ## Deploy to DigitalOcean App Platform
 
-1. Push this repository to GitHub.
-2. In the [DigitalOcean control panel](https://cloud.digitalocean.com/apps), create a new **App** and connect your GitHub repo.
-3. App Platform detects Node.js from `package.json`. Build and run commands:
-   - **Build command:** `npm run build`
-   - **Run command:** `npm start`
-4. Set the HTTP port to **8080** (or rely on the `PORT` env var App Platform injects).
-5. Configure the health check path to `/health`.
+The included [`.do/app.yaml`](.do/app.yaml) defines three components:
 
-Alternatively, use the included spec file after updating the repo name:
+| Component | Type | Run command | Purpose |
+|-----------|------|-------------|---------|
+| `api` | Web service | `npm run start:api` | Accepts job submissions, serves status API |
+| `worker` | Worker | `npm run start:worker` | Processes jobs from the shared queue |
+| `job-queue-redis` | Redis 7 | — | Shared job store and queue |
+
+### Option 1: DigitalOcean control panel
+
+1. Push this repo to GitHub (`AlexanderWong/workspaces`).
+2. Go to [DigitalOcean Apps](https://cloud.digitalocean.com/apps) → **Create App** → **GitHub**.
+3. Select the repo and branch `main`.
+4. App Platform reads `.do/app.yaml` automatically, or set manually:
+   - **API service:** build `npm run build`, run `npm run start:api`, port `8080`, health check `/health`
+   - **Worker service:** build `npm run build`, run `npm run start:worker`
+   - **Database:** add a Redis 7 cluster; bind `REDIS_URL` to both components
+5. Set env vars on both services: `MAX_JOB_RETRIES=3`, `RETRY_BACKOFF_MS=1000`
+6. Deploy.
+
+### Option 2: doctl CLI
 
 ```bash
-# Edit .do/app.yaml — replace YOUR_GITHUB_USERNAME/YOUR_REPO_NAME
+# Authenticate (one-time)
+doctl auth init
+
+# Create the app from the spec
 doctl apps create --spec .do/app.yaml
+
+# Watch deployment progress
+doctl apps list
+doctl apps get <APP_ID> --format DefaultIngress --no-header
+```
+
+### Verify deployment
+
+```bash
+# Replace with your App Platform URL
+APP_URL=https://your-app.ondigitalocean.app
+
+curl -X POST "$APP_URL/api/v1/jobs" \
+  -H "Content-Type: application/json" \
+  -d '{"sleepMs": 1000, "transientFailureCount": 1}'
+
+curl "$APP_URL/api/v1/jobs/<JOB_ID>"
+curl "$APP_URL/health"
 ```
 
 ## Known limitations
 
 | Limitation | Detail |
 |------------|--------|
-| **In-memory storage** | Jobs are lost on process restart; no persistence layer |
-| **Single-instance only** | Queue and job store are in-process; horizontal scaling would require Redis/PostgreSQL and an external queue |
+| **In-memory storage (local)** | Without `REDIS_URL`, jobs live in process memory — fine for dev, not for split deploy |
+| **Redis required for split deploy** | API and worker processes must share a Redis instance |
 | **Polling required** | Clients must poll `GET /jobs/:id`; no webhooks or SSE |
 | **No authentication** | All endpoints are public |
 | **No rate limiting** | Unlimited job submission |

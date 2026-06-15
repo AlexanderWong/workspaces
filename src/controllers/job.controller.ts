@@ -15,6 +15,8 @@ export class JobController {
       data: {
         id: job.id,
         status: job.status,
+        retryCount: job.retryCount,
+        maxRetries: job.maxRetries,
       },
     });
   };
@@ -28,6 +30,8 @@ export class JobController {
         payload: job.payload,
         result: job.result,
         error: job.error,
+        retryCount: job.retryCount,
+        maxRetries: job.maxRetries,
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
         startedAt: job.startedAt,

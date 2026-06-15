@@ -2,11 +2,16 @@
  * Background worker pool — pulls job IDs from the queue and processes them.
  *
  * Spawns WORKER_CONCURRENCY independent async loops. Each loop:
- *   dequeue → markRunning → process → markCompleted | markFailed
+ *   dequeue → markRunning → process → markCompleted | requeue (retry) | markFailed
  */
+import { isTransientProcessingError } from '../errors/processing-error';
 import type { Env } from '../config/env';
 import type { JobProcessor } from './job.processor';
 import type { JobQueue, JobRepository } from '../types/job';
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export class WorkerPool {
   private running = false;
@@ -16,7 +21,10 @@ export class WorkerPool {
     private readonly queue: JobQueue,
     private readonly repository: JobRepository,
     private readonly processor: JobProcessor,
-    private readonly config: Pick<Env, 'WORKER_CONCURRENCY' | 'WORKER_POLL_INTERVAL_MS'>,
+    private readonly config: Pick<
+      Env,
+      'WORKER_CONCURRENCY' | 'WORKER_POLL_INTERVAL_MS' | 'RETRY_BACKOFF_MS'
+    >,
   ) {}
 
   start(): void {
@@ -41,7 +49,8 @@ export class WorkerPool {
     while (this.running) {
       const jobId = await this.queue.dequeue(this.config.WORKER_POLL_INTERVAL_MS);
       if (!jobId) {
-        continue; // poll timeout — try again
+        await sleep(this.config.WORKER_POLL_INTERVAL_MS);
+        continue;
       }
 
       await this.processJob(jobId, workerId);
@@ -55,9 +64,21 @@ export class WorkerPool {
     }
 
     try {
-      const result = await this.processor.process(job.payload);
+      const result = await this.processor.process(job);
       await this.repository.markCompleted(jobId, result);
     } catch (error) {
+      if (isTransientProcessingError(error)) {
+        const requeued = await this.repository.requeueForRetry(jobId, error.message);
+        if (requeued) {
+          console.warn(
+            `Worker ${workerId} transient failure on job ${jobId} — retry ${requeued.retryCount}/${requeued.maxRetries}`,
+          );
+          await sleep(this.config.RETRY_BACKOFF_MS);
+          await this.queue.enqueue(jobId);
+          return;
+        }
+      }
+
       const message = error instanceof Error ? error.message : 'Unknown processing error';
       console.error(`Worker ${workerId} failed job ${jobId}:`, message);
       await this.repository.markFailed(jobId, message);

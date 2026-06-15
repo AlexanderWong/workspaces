@@ -17,25 +17,29 @@ import { InMemoryJobRepository } from './repositories/in-memory-job.repository';
 import { createHealthRouter } from './routes/health.routes';
 import { createJobRouter } from './routes/job.routes';
 import { JobService } from './services/job.service';
+import { createJobStorage } from './storage';
+import type { JobQueue, JobRepository } from './types/job';
 import { MockJobProcessor } from './workers/job.processor';
 import { WorkerPool } from './workers/worker-pool';
 
 export interface AppDependencies {
-  jobRepository?: InMemoryJobRepository;
-  jobQueue?: InMemoryJobQueue;
+  jobRepository?: JobRepository;
+  jobQueue?: JobQueue;
   workerPool?: WorkerPool;
   startWorkers?: boolean;
+  closeStorage?: () => Promise<void>;
 }
 
 export interface AppInstance {
   app: express.Application;
   workerPool: WorkerPool;
+  close: () => Promise<void>;
 }
 
-export function createApp(
+export async function createApp(
   config: Env = env,
   dependencies: AppDependencies = {},
-): AppInstance {
+): Promise<AppInstance> {
   const app = express();
 
   app.use(helmet());
@@ -44,9 +48,16 @@ export function createApp(
 
   app.use(createHealthRouter());
 
-  // Shared instances used by both HTTP handlers and background workers
-  const jobRepository = dependencies.jobRepository ?? new InMemoryJobRepository();
-  const jobQueue = dependencies.jobQueue ?? new InMemoryJobQueue();
+  const storage =
+    dependencies.jobRepository && dependencies.jobQueue
+      ? {
+          repository: dependencies.jobRepository,
+          queue: dependencies.jobQueue,
+          close: dependencies.closeStorage ?? (async () => {}),
+        }
+      : await createJobStorage(config);
+
+  const { repository: jobRepository, queue: jobQueue } = storage;
   const jobService = new JobService(jobRepository, jobQueue);
   const jobController = new JobController(jobService);
 
@@ -57,18 +68,31 @@ export function createApp(
 
   const workerPool =
     dependencies.workerPool ??
-    new WorkerPool(
-      jobQueue,
-      jobRepository,
-      new MockJobProcessor(config),
-      config,
-    );
+    new WorkerPool(jobQueue, jobRepository, new MockJobProcessor(config), config);
 
-  // Workers are disabled in tests so each test can control start/stop timing
-  const shouldStartWorkers = dependencies.startWorkers ?? config.NODE_ENV !== 'test';
+  const shouldStartWorkers =
+    dependencies.startWorkers ?? (config.WORKERS_ENABLED && config.NODE_ENV !== 'test');
   if (shouldStartWorkers) {
     workerPool.start();
   }
 
-  return { app, workerPool };
+  return {
+    app,
+    workerPool,
+    close: async () => {
+      await workerPool.stop();
+      await storage.close();
+    },
+  };
+}
+
+/** Factory helpers for tests using in-memory storage */
+export function createInMemoryStorage(config: Env): {
+  repository: InMemoryJobRepository;
+  queue: InMemoryJobQueue;
+} {
+  return {
+    repository: new InMemoryJobRepository(config),
+    queue: new InMemoryJobQueue(),
+  };
 }

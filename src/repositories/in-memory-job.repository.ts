@@ -7,11 +7,14 @@
  */
 import { randomUUID } from 'crypto';
 import { AsyncMutex } from '../concurrency/async-mutex';
+import type { Env } from '../config/env';
 import type { Job, JobPayload, JobRepository, JobResult } from '../types/job';
 
 export class InMemoryJobRepository implements JobRepository {
   private readonly jobs = new Map<string, Job>();
   private readonly mutex = new AsyncMutex();
+
+  constructor(private readonly config: Pick<Env, 'MAX_JOB_RETRIES'>) {}
 
   async create(payload: JobPayload): Promise<Job> {
     return this.mutex.runExclusive(() => {
@@ -22,6 +25,8 @@ export class InMemoryJobRepository implements JobRepository {
         payload,
         result: null,
         error: null,
+        retryCount: 0,
+        maxRetries: this.config.MAX_JOB_RETRIES,
         createdAt: now,
         updatedAt: now,
         startedAt: null,
@@ -94,6 +99,37 @@ export class InMemoryJobRepository implements JobRepository {
         error,
         updatedAt: now,
         completedAt: now,
+      };
+
+      this.jobs.set(id, updated);
+      return updated;
+    });
+  }
+
+  /**
+   * Returns the requeued job, or null if max retries exceeded.
+   * Caller should markFailed when null is returned.
+   */
+  async requeueForRetry(id: string, error: string): Promise<Job | null> {
+    return this.mutex.runExclusive(() => {
+      const job = this.jobs.get(id);
+      if (!job || job.status !== 'running') {
+        return null;
+      }
+
+      const nextRetryCount = job.retryCount + 1;
+      if (nextRetryCount > job.maxRetries) {
+        return null;
+      }
+
+      const now = new Date().toISOString();
+      const updated: Job = {
+        ...job,
+        status: 'queued',
+        error,
+        retryCount: nextRetryCount,
+        updatedAt: now,
+        startedAt: null,
       };
 
       this.jobs.set(id, updated);
