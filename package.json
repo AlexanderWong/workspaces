@@ -11,6 +11,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
     "test:watch": "vitest",
     "lint": "eslint src tests --ext .ts",
     "typecheck": "tsc --noEmit"

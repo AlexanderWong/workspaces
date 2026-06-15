@@ -1,21 +1,13 @@
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createApp } from '../src/app';
-import { env } from '../src/config/env';
-import { InMemoryJobQueue } from '../src/queue/in-memory-job.queue';
-import { InMemoryJobRepository } from '../src/repositories/in-memory-job.repository';
-import { MockJobProcessor } from '../src/workers/job.processor';
-import { WorkerPool } from '../src/workers/worker-pool';
+import { createApp } from '../../src/app';
+import { InMemoryJobQueue } from '../../src/queue/in-memory-job.queue';
+import { InMemoryJobRepository } from '../../src/repositories/in-memory-job.repository';
+import { MockJobProcessor } from '../../src/workers/job.processor';
+import { WorkerPool } from '../../src/workers/worker-pool';
+import { testConfig } from '../helpers/test-config';
 
-const testConfig = {
-  ...env,
-  NODE_ENV: 'test' as const,
-  DEFAULT_JOB_SLEEP_MS: 50,
-  WORKER_POLL_INTERVAL_MS: 25,
-  WORKER_CONCURRENCY: 2,
-};
-
-describe('Jobs API', () => {
+describe('Jobs API integration', () => {
   let repository: InMemoryJobRepository;
   let queue: InMemoryJobQueue;
   let workerPool: WorkerPool;
@@ -131,7 +123,7 @@ describe('Jobs API', () => {
   });
 });
 
-describe('Health endpoint', () => {
+describe('Health endpoint integration', () => {
   it('returns ok status', async () => {
     const { app } = createApp(testConfig, { startWorkers: false });
 

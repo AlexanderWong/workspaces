@@ -44,7 +44,7 @@ export interface JobRepository {
 }
 
 export interface JobQueue {
-  enqueue(jobId: string): void;
+  enqueue(jobId: string): Promise<void>;
   dequeue(timeoutMs: number): Promise<string | null>;
   size(): number;
 }

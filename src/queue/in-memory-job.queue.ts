@@ -1,3 +1,4 @@
+import { AsyncMutex } from '../concurrency/async-mutex';
 import type { JobQueue } from '../types/job';
 
 type QueueWaiter = (jobId: string) => void;
@@ -5,19 +6,22 @@ type QueueWaiter = (jobId: string) => void;
 export class InMemoryJobQueue implements JobQueue {
   private readonly pending: string[] = [];
   private readonly waiters: QueueWaiter[] = [];
+  private readonly mutex = new AsyncMutex();
 
-  enqueue(jobId: string): void {
-    const waiter = this.waiters.shift();
-    if (waiter) {
-      waiter(jobId);
-      return;
-    }
+  async enqueue(jobId: string): Promise<void> {
+    await this.mutex.runExclusive(async () => {
+      const waiter = this.waiters.shift();
+      if (waiter) {
+        waiter(jobId);
+        return;
+      }
 
-    this.pending.push(jobId);
+      this.pending.push(jobId);
+    });
   }
 
   async dequeue(timeoutMs: number): Promise<string | null> {
-    const immediate = this.pending.shift();
+    const immediate = await this.mutex.runExclusive(async () => this.pending.shift() ?? null);
     if (immediate) {
       return immediate;
     }
@@ -36,7 +40,15 @@ export class InMemoryJobQueue implements JobQueue {
 
       const timeout = setTimeout(() => finish(null), timeoutMs);
 
-      this.waiters.push((jobId) => finish(jobId));
+      void this.mutex.runExclusive(async () => {
+        const available = this.pending.shift();
+        if (available) {
+          finish(available);
+          return;
+        }
+
+        this.waiters.push((jobId) => finish(jobId));
+      });
     });
   }
 

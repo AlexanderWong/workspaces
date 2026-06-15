@@ -9,7 +9,7 @@ export class JobService {
 
   async submitJob(payload: JobPayload): Promise<Job> {
     const job = await this.repository.create(payload);
-    this.queue.enqueue(job.id);
+    await this.queue.enqueue(job.id);
     return job;
   }
 

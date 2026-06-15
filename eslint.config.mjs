@@ -1,6 +1,10 @@
 import { defineConfig } from 'eslint/config';
 import tseslint from '@typescript-eslint/eslint-plugin';
 import tsparser from '@typescript-eslint/parser';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const tsconfigRootDir = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig([
   {
@@ -9,6 +13,7 @@ export default defineConfig([
       parser: tsparser,
       parserOptions: {
         project: './tsconfig.test.json',
+        tsconfigRootDir,
       },
     },
     plugins: {
