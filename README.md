@@ -383,6 +383,73 @@ curl "$APP_URL/api/v1/jobs/<JOB_ID>"
 curl "$APP_URL/health"
 ```
 
+## Next steps
+
+### Integrate PostgreSQL for job records
+
+Today, Redis stores both **queue coordination** (`jobs:queue`, `jobs:inflight`, `jobs:dlq`) and **job records** (`job:{id}` JSON). That works at current scale, but PostgreSQL is the recommended next step for durable job persistence — especially if you add job listing, retention policies, multi-tenant isolation, or larger payloads.
+
+**Target architecture:** keep Redis for the queue; move job records to Postgres.
+
+```mermaid
+flowchart LR
+    API[API service] --> PG[(PostgreSQL job records)]
+    API --> RQ[Redis queue and inflight]
+    Worker[Worker service] --> RQ
+    Worker --> PG
+```
+
+| Component | Responsibility |
+|-----------|----------------|
+| **Redis** (unchanged) | Claim, inflight visibility, reaper, DLQ, enqueue/dequeue |
+| **PostgreSQL** (new) | `Job` rows — status, payload, result, timestamps, retries |
+
+The existing `JobRepository` / `JobQueue` split makes this a contained change: swap `RedisJobRepository` for `PostgresJobRepository` without touching `WorkerPool`, routes, or the dashboard.
+
+#### Implementation plan
+
+1. **Add Postgres client** — e.g. `pg` with a small connection pool; add `DATABASE_URL` to `env.ts`.
+2. **Create schema and migration** — single `jobs` table matching the `Job` domain type (see below).
+3. **Implement `PostgresJobRepository`** — same interface as today: `create`, `findById`, `markRunning`, `markCompleted`, `markFailed`, `requeueForRetry`. Use `UPDATE ... WHERE status = $expected` for atomic transitions (same guards as the Redis Lua scripts).
+4. **Update `createJobStorage()`** — when `DATABASE_URL` is set, use `PostgresJobRepository` + `RedisJobQueue`; fall back to in-memory for local dev without Postgres.
+5. **Add tests** — unit tests for Postgres repository (Testcontainers or a CI Postgres service); keep existing Redis queue tests.
+6. **Deploy** — add a Managed PostgreSQL cluster on DigitalOcean; bind `DATABASE_URL` to API and worker components in `.do/app.yaml`. Redis stays for queue coordination only.
+7. **Follow-ups** — job listing endpoint (`GET /jobs?status=failed`), retention job (delete completed rows older than N days), DLQ replay tooling.
+
+#### Proposed schema
+
+```sql
+CREATE TABLE jobs (
+  id            UUID PRIMARY KEY,
+  status        TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed')),
+  payload       JSONB NOT NULL,
+  result        JSONB,
+  error         TEXT,
+  retry_count   INT NOT NULL DEFAULT 0,
+  max_retries   INT NOT NULL DEFAULT 3,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  started_at    TIMESTAMPTZ,
+  completed_at  TIMESTAMPTZ
+);
+
+CREATE INDEX jobs_status_created_idx ON jobs (status, created_at DESC);
+```
+
+#### What stays the same
+
+- `JobQueue` / `RedisJobQueue` — claim semantics, reaper, graceful shutdown, DLQ
+- HTTP API contract (`POST /jobs`, `GET /jobs/:id`)
+- Split API + worker deployment model
+- In-memory storage path for local development
+
+### Other roadmap items
+
+- **Authentication and rate limiting** — API keys or OAuth, per-tenant quotas
+- **Push-based completion** — webhooks or SSE instead of client polling
+- **Real job processors** — replace `MockJobProcessor` with pluggable handlers per job type
+- **Observability** — structured logging, queue depth metrics, deep health checks
+
 ## Known limitations
 
 | Limitation | Detail |
