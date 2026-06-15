@@ -23,7 +23,7 @@ Designed for deployment to **GitHub** (with CI) and **DigitalOcean App Platform*
 ```mermaid
 sequenceDiagram
     participant Client
-    participant HTTP as Express (HTTP Layer)
+    participant HTTP as Express HTTP Layer
     participant Controller
     participant Service
     participant Repo as Job Repository
@@ -34,56 +34,56 @@ sequenceDiagram
     participant Processor as Mock Processor
 
     Client->>HTTP: POST /api/v1/jobs payload
-    HTTP->>Controller: submit(req.body)
-    Controller->>Service: submitJob(payload)
-    Service->>Repo: create(payload), status queued
-    Repo->>Redis: SET job:{id}
-    Service->>Queue: enqueue(jobId)
-    Queue->>Redis: LPUSH jobs:queue
+    HTTP->>Controller: submit req.body
+    Controller->>Service: submitJob payload
+    Service->>Repo: create payload status queued
+    Repo->>Redis: SET job record
+    Service->>Queue: enqueue jobId
+    Queue->>Redis: LPUSH jobs queue
     Service-->>Controller: job
     Controller-->>Client: 202 Accepted with job id and status
 
-    Note over Repo,Queue,Redis: In-memory locally; Redis + Lua scripts when REDIS_URL is set
+    Note over Redis: In-memory locally, Redis and Lua when REDIS_URL is set
 
-    par Reaper (crash recovery)
+    par Reaper crash recovery
         loop Every REAPER_INTERVAL_MS
-            Reaper->>Queue: reapExpired()
-            Queue->>Redis: requeue jobs past visibility deadline
+            Reaper->>Queue: reapExpired
+            Queue->>Redis: requeue expired inflight jobs
         end
     and Worker pool
-        loop Each worker (concurrency N)
-            Worker->>Queue: claim(pollIntervalMs)
-            Queue->>Redis: Lua RPOP jobs:queue + ZADD jobs:inflight
+        loop Each worker concurrency N
+            Worker->>Queue: claim pollIntervalMs
+            Queue->>Redis: Lua RPOP queue and ZADD inflight
             Queue-->>Worker: jobId or null
-            Worker->>Repo: markRunning(jobId)
-            Repo->>Redis: Lua SET running + extend inflight deadline
-            Worker->>Processor: process(job.payload)
+            Worker->>Repo: markRunning jobId
+            Repo->>Redis: Lua SET running and extend inflight deadline
+            Worker->>Processor: process job payload
             alt Success
                 Processor-->>Worker: result
-                Worker->>Repo: markCompleted(jobId, result)
-                Repo->>Redis: Lua SET completed + ZREM jobs:inflight
+                Worker->>Repo: markCompleted jobId result
+                Repo->>Redis: Lua SET completed and ZREM inflight
             else Transient failure retries remaining
                 Processor-->>Worker: TransientProcessingError
-                Worker->>Repo: requeueForRetry(jobId)
-                Repo->>Redis: Lua SET queued + ZREM jobs:inflight
+                Worker->>Repo: requeueForRetry jobId
+                Repo->>Redis: Lua SET queued and ZREM inflight
                 Note over Worker: backoff RETRY_BACKOFF_MS
-                Worker->>Queue: enqueue(jobId)
-                Queue->>Redis: LPUSH jobs:queue
+                Worker->>Queue: enqueue jobId
+                Queue->>Redis: LPUSH jobs queue
             else Permanent failure or max retries exceeded
                 Processor-->>Worker: error
-                Worker->>Repo: markFailed(jobId, error)
-                Repo->>Redis: Lua SET failed + ZREM inflight + LPUSH jobs:dlq
+                Worker->>Repo: markFailed jobId error
+                Repo->>Redis: Lua SET failed ZREM inflight LPUSH dlq
             end
         end
     end
 
-    Note over Worker,Queue: SIGTERM shutdown drains SHUTDOWN_DRAIN_MS then nack() returns in-flight jobs to queue
+    Note over Worker: SIGTERM drains SHUTDOWN_DRAIN_MS then nack in-flight jobs to queue
 
-    Client->>HTTP: GET /api/v1/jobs/:id
-    HTTP->>Controller: getStatus(id)
-    Controller->>Service: getJob(id)
-    Service->>Repo: findById(id)
-    Repo->>Redis: GET job:{id}
+    Client->>HTTP: GET /api/v1/jobs by id
+    HTTP->>Controller: getStatus id
+    Controller->>Service: getJob id
+    Service->>Repo: findById id
+    Repo->>Redis: GET job record
     Repo-->>Service: job
     Service-->>Controller: job
     Controller-->>Client: 200 status result or error
