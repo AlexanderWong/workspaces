@@ -35,28 +35,37 @@ sequenceDiagram
     Service->>Repo: create(payload) → status: queued
     Service->>Queue: enqueue(jobId)
     Service-->>Controller: job
-    Controller-->>Client: 202 { id, status: queued }
+    Controller-->>Client: 202 { id, status, retryCount, maxRetries }
 
+    Note over Repo,Queue: In-memory locally; Redis when REDIS_URL is set
     Note over Worker,Processor: Decoupled background execution
 
     loop Each worker (concurrency N)
-        Worker->>Queue: dequeue()
-        Queue-->>Worker: jobId
+        Worker->>Queue: dequeue(pollIntervalMs)
+        Queue-->>Worker: jobId | null
         Worker->>Repo: markRunning(jobId)
-        Worker->>Processor: process(payload)
-        Processor-->>Worker: result (after sleep)
-        Worker->>Repo: markCompleted(jobId, result)
-        alt Transient failure
+        Worker->>Processor: process(job.payload)
+        alt Success
+            Processor-->>Worker: result
+            Worker->>Repo: markCompleted(jobId, result)
+        else Transient failure (retries remaining)
+            Processor-->>Worker: TransientProcessingError
             Worker->>Repo: requeueForRetry(jobId)
+            Note over Worker: backoff (RETRY_BACKOFF_MS)
             Worker->>Queue: enqueue(jobId)
-        else Permanent failure / max retries
+        else Permanent failure / max retries exceeded
+            Processor-->>Worker: error
             Worker->>Repo: markFailed(jobId, error)
         end
     end
 
     Client->>HTTP: GET /api/v1/jobs/:id
-    HTTP->>Repo: findById(id)
-    Repo-->>Client: { status, result | error }
+    HTTP->>Controller: getStatus(id)
+    Controller->>Service: getJob(id)
+    Service->>Repo: findById(id)
+    Repo-->>Service: job
+    Service-->>Controller: job
+    Controller-->>Client: 200 { status, result | error }
 ```
 
 ### Layer responsibilities
@@ -66,17 +75,18 @@ sequenceDiagram
 | `routes/` | HTTP routing and request validation |
 | `controllers/` | Request/response mapping |
 | `services/` | Business logic (submit, lookup) |
-| `repositories/` | Job persistence with mutex-protected updates |
-| `queue/` | Async FIFO job queue with mutex-protected enqueue/dequeue |
+| `storage/` | Factory — in-memory (local) or Redis (split deploy) |
+| `repositories/` | Job persistence (mutex-protected in-memory; Redis in production) |
+| `queue/` | Async FIFO job queue (mutex-protected in-memory; Redis in production) |
 | `workers/` | Worker pool and job processor |
-| `concurrency/` | `AsyncMutex` for safe shared-state access |
+| `concurrency/` | `AsyncMutex` for safe in-memory shared-state access |
 
 ### Concurrency control
 
-HTTP handlers and background workers share the same in-memory job store and queue. Both can access state concurrently, so critical sections are serialized with an `AsyncMutex`:
+HTTP handlers and background workers share the same job store and queue. Locally (no `REDIS_URL`), both live in process memory; in split deploy, API and worker processes share Redis via `createJobStorage()`.
 
-- **Repository** — all reads and state transitions (`create`, `findById`, `markRunning`, `markCompleted`, `markFailed`) run inside `runExclusive()` blocks, preventing lost updates or invalid transitions when a worker updates status while a client polls `GET /jobs/:id`.
-- **Queue** — `enqueue` and `dequeue` are mutex-protected so job IDs are handed to exactly one worker.
+- **In-memory (local dev)** — repository and queue operations run inside `AsyncMutex.runExclusive()` blocks so concurrent HTTP polls and worker updates cannot interleave.
+- **Redis (production)** — repository and queue use Redis commands; no in-process mutex is needed because state is externalized.
 - **Status guards** — transitions enforce a strict lifecycle (`queued` → `running` → `completed`/`failed`); concurrent `markRunning` calls on the same job only succeed once.
 
 ## API
@@ -169,8 +179,9 @@ GET /health
 
 ```bash
 git clone <your-repo-url>
-cd rest-api
+cd <repo-directory>   # folder created by git clone (package name is rest-api, not the directory)
 npm install
+npm run dev           # http://localhost:8080 — see Execution below for other modes
 ```
 
 ## Execution
