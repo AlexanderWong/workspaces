@@ -9,6 +9,7 @@ Designed for deployment to **GitHub** (with CI) and **DigitalOcean App Platform*
 - **Job submission** — `POST /api/v1/jobs` accepts a payload and returns a job ID immediately (`202 Accepted`)
 - **Background worker pool** — configurable concurrency; mock processor simulates work with `sleep`
 - **Status API** — `GET /api/v1/jobs/:id` returns `queued`, `running`, `completed`, or `failed` plus result/error
+- **Web dashboard** — simple UI at `/` to submit jobs, poll status, and inspect results
 - **Health check** — `GET /health` for load balancers and App Platform probes
 - **Concurrency control** — mutex-protected job state and queue operations
 - **Automated retries** — transient failures are retried with configurable backoff; permanent failures fail immediately
@@ -172,6 +173,19 @@ GET /api/v1/jobs/:id
 ```http
 GET /health
 ```
+
+## Web dashboard
+
+With the API running, open `http://localhost:8080/` in a browser.
+
+The dashboard lets you:
+
+- Submit jobs with `sleepMs`, optional JSON payload, and failure simulation flags
+- Poll job status automatically until `completed` or `failed`
+- Look up any job by ID
+- Review jobs submitted during the current browser session
+
+Static assets live in `public/` and are served by the same Express process as the API (no separate frontend build step).
 
 ## Setup
 

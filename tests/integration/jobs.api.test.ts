@@ -154,3 +154,24 @@ describe('Health endpoint integration', () => {
     expect(response.body.timestamp).toBeTruthy();
   });
 });
+
+describe('Dashboard UI integration', () => {
+  it('serves the dashboard at the root path', async () => {
+    const { app } = await createApp(testConfig, { startWorkers: false });
+
+    const response = await request(app).get('/').expect(200);
+
+    expect(response.text).toContain('Job Queue Dashboard');
+    expect(response.text).toContain('/app.js');
+  });
+
+  it('serves dashboard static assets', async () => {
+    const { app } = await createApp(testConfig, { startWorkers: false });
+
+    const cssResponse = await request(app).get('/styles.css').expect(200);
+    const jsResponse = await request(app).get('/app.js').expect(200);
+
+    expect(cssResponse.text).toContain(':root');
+    expect(jsResponse.text).toContain('/api/v1');
+  });
+});

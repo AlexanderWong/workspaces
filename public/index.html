@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Job Queue Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div>
+          <p class="eyebrow">Async Job Queue</p>
+          <h1>Job Queue Dashboard</h1>
+          <p class="subtitle">Submit jobs, track status, and inspect results via the REST API.</p>
+        </div>
+        <div class="health" id="health-indicator" aria-live="polite">
+          <span class="health-dot"></span>
+          <span>Checking API…</span>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel">
+          <h2>Submit a job</h2>
+          <form id="submit-form" class="form">
+            <label class="field">
+              <span>Sleep duration (ms)</span>
+              <input
+                type="number"
+                name="sleepMs"
+                min="1"
+                max="60000"
+                value="2000"
+                required
+              />
+            </label>
+
+            <label class="field">
+              <span>Payload data (JSON)</span>
+              <textarea
+                name="data"
+                rows="4"
+                placeholder='{ "task": "process-report" }'
+              >{ "task": "demo" }</textarea>
+            </label>
+
+            <label class="field checkbox">
+              <input type="checkbox" name="shouldFail" />
+              <span>Simulate permanent failure</span>
+            </label>
+
+            <label class="field">
+              <span>Transient failures before success</span>
+              <input
+                type="number"
+                name="transientFailureCount"
+                min="0"
+                max="10"
+                placeholder="0"
+              />
+            </label>
+
+            <button type="submit" class="button primary" id="submit-button">
+              Submit job
+            </button>
+            <p class="form-hint" id="submit-message" role="status"></p>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Job status</h2>
+            <button type="button" class="button ghost" id="refresh-button" hidden>
+              Refresh
+            </button>
+          </div>
+
+          <form id="lookup-form" class="lookup-form">
+            <label class="field">
+              <span>Job ID</span>
+              <input
+                type="text"
+                name="jobId"
+                id="job-id-input"
+                placeholder="550e8400-e29b-41d4-a716-446655440000"
+                pattern="[0-9a-fA-F-]{36}"
+              />
+            </label>
+            <button type="submit" class="button">Look up</button>
+          </form>
+
+          <div id="job-empty" class="empty-state">
+            Submit a job or enter an ID to see status here.
+          </div>
+
+          <article id="job-detail" class="job-detail" hidden>
+            <div class="job-header">
+              <div>
+                <p class="label">Job ID</p>
+                <code id="detail-id" class="mono"></code>
+              </div>
+              <span id="detail-status" class="status-badge"></span>
+            </div>
+
+            <dl class="meta-grid">
+              <div>
+                <dt>Retries</dt>
+                <dd id="detail-retries"></dd>
+              </div>
+              <div>
+                <dt>Created</dt>
+                <dd id="detail-created"></dd>
+              </div>
+              <div>
+                <dt>Started</dt>
+                <dd id="detail-started"></dd>
+              </div>
+              <div>
+                <dt>Completed</dt>
+                <dd id="detail-completed"></dd>
+              </div>
+            </dl>
+
+            <div class="json-block">
+              <h3>Payload</h3>
+              <pre id="detail-payload"></pre>
+            </div>
+
+            <div class="json-block" id="result-block" hidden>
+              <h3>Result</h3>
+              <pre id="detail-result"></pre>
+            </div>
+
+            <div class="json-block error-block" id="error-block" hidden>
+              <h3>Error</h3>
+              <pre id="detail-error"></pre>
+            </div>
+          </article>
+        </section>
+      </main>
+
+      <section class="panel recent-panel">
+        <h2>Recent jobs</h2>
+        <ul id="recent-jobs" class="recent-list">
+          <li class="empty-state">No jobs submitted this session.</li>
+        </ul>
+      </section>
+    </div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
