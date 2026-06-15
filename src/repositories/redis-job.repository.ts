@@ -1,18 +1,25 @@
 /**
  * Redis-backed job store for production deployments where the API and
  * worker processes run separately and share state via Redis.
+ *
+ * State transitions use Lua scripts for atomic read-check-write.
  */
 import { randomUUID } from 'crypto';
+import {
+  MARK_COMPLETED_SCRIPT,
+  MARK_FAILED_SCRIPT,
+  MARK_RUNNING_SCRIPT,
+  REQUEUE_FOR_RETRY_SCRIPT,
+} from '../redis/lua-scripts';
+import { DLQ_KEY, INFLIGHT_KEY, jobKey } from '../redis/keys';
 import type { RedisClient } from '../types/redis-client';
 import type { Env } from '../config/env';
 import type { Job, JobPayload, JobRepository, JobResult } from '../types/job';
 
-const jobKey = (id: string): string => `job:${id}`;
-
 export class RedisJobRepository implements JobRepository {
   constructor(
     private readonly redis: RedisClient,
-    private readonly config: Pick<Env, 'MAX_JOB_RETRIES'>,
+    private readonly config: Pick<Env, 'MAX_JOB_RETRIES' | 'VISIBILITY_TIMEOUT_MS'>,
   ) {}
 
   async create(payload: JobPayload): Promise<Job> {
@@ -41,73 +48,60 @@ export class RedisJobRepository implements JobRepository {
   }
 
   async markRunning(id: string): Promise<Job | null> {
-    return this.transition(id, 'queued', (job) => ({
-      ...job,
-      status: 'running',
-      startedAt: new Date().toISOString(),
-    }));
+    const now = new Date().toISOString();
+    const visibilityDeadline = String(Date.now() + this.config.VISIBILITY_TIMEOUT_MS);
+    const raw = await this.redis.eval(
+      MARK_RUNNING_SCRIPT,
+      2,
+      jobKey(id),
+      INFLIGHT_KEY,
+      now,
+      visibilityDeadline,
+    );
+
+    return typeof raw === 'string' ? (JSON.parse(raw) as Job) : null;
   }
 
   async markCompleted(id: string, result: JobResult): Promise<Job | null> {
-    return this.transition(id, 'running', (job) => ({
-      ...job,
-      status: 'completed',
-      result,
-      error: null,
-      completedAt: new Date().toISOString(),
-    }));
+    const now = new Date().toISOString();
+    const raw = await this.redis.eval(
+      MARK_COMPLETED_SCRIPT,
+      2,
+      jobKey(id),
+      INFLIGHT_KEY,
+      JSON.stringify(result),
+      now,
+    );
+
+    return typeof raw === 'string' ? (JSON.parse(raw) as Job) : null;
   }
 
   async markFailed(id: string, error: string): Promise<Job | null> {
-    return this.transition(id, 'running', (job) => ({
-      ...job,
-      status: 'failed',
+    const now = new Date().toISOString();
+    const raw = await this.redis.eval(
+      MARK_FAILED_SCRIPT,
+      3,
+      jobKey(id),
+      INFLIGHT_KEY,
+      DLQ_KEY,
       error,
-      completedAt: new Date().toISOString(),
-    }));
+      now,
+    );
+
+    return typeof raw === 'string' ? (JSON.parse(raw) as Job) : null;
   }
 
   async requeueForRetry(id: string, error: string): Promise<Job | null> {
-    const job = await this.findById(id);
-    if (!job || job.status !== 'running') {
-      return null;
-    }
-
-    const nextRetryCount = job.retryCount + 1;
-    if (nextRetryCount > job.maxRetries) {
-      return null;
-    }
-
-    const updated: Job = {
-      ...job,
-      status: 'queued',
+    const now = new Date().toISOString();
+    const raw = await this.redis.eval(
+      REQUEUE_FOR_RETRY_SCRIPT,
+      2,
+      jobKey(id),
+      INFLIGHT_KEY,
       error,
-      retryCount: nextRetryCount,
-      updatedAt: new Date().toISOString(),
-      startedAt: null,
-    };
+      now,
+    );
 
-    await this.redis.set(jobKey(id), JSON.stringify(updated));
-    return updated;
-  }
-
-  /** Read-modify-write with status guard to prevent invalid transitions */
-  private async transition(
-    id: string,
-    expectedStatus: Job['status'],
-    transform: (job: Job) => Job,
-  ): Promise<Job | null> {
-    const job = await this.findById(id);
-    if (!job || job.status !== expectedStatus) {
-      return null;
-    }
-
-    const updated: Job = {
-      ...transform(job),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await this.redis.set(jobKey(id), JSON.stringify(updated));
-    return updated;
+    return typeof raw === 'string' ? (JSON.parse(raw) as Job) : null;
   }
 }

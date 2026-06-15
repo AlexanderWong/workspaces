@@ -16,7 +16,7 @@ export async function createJobStorage(config: Env): Promise<JobStorage> {
 
     return {
       repository: new RedisJobRepository(redis, config),
-      queue: new RedisJobQueue(redis),
+      queue: new RedisJobQueue(redis, config.VISIBILITY_TIMEOUT_MS),
       close: async () => {
         await redis.quit();
       },

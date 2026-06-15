@@ -38,6 +38,12 @@ services:
         value: "3"
       - key: RETRY_BACKOFF_MS
         value: "1000"
+      - key: VISIBILITY_TIMEOUT_MS
+        value: "120000"
+      - key: REAPER_INTERVAL_MS
+        value: "5000"
+      - key: SHUTDOWN_DRAIN_MS
+        value: "10000"
       - key: REDIS_URL
         scope: RUN_TIME
         value: ${job-queue-redis.REDIS_URL}
@@ -65,6 +71,12 @@ workers:
         value: "1000"
       - key: DEFAULT_JOB_SLEEP_MS
         value: "1000"
+      - key: VISIBILITY_TIMEOUT_MS
+        value: "120000"
+      - key: REAPER_INTERVAL_MS
+        value: "5000"
+      - key: SHUTDOWN_DRAIN_MS
+        value: "10000"
       - key: REDIS_URL
         scope: RUN_TIME
         value: ${job-queue-redis.REDIS_URL}

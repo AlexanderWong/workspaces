@@ -22,7 +22,7 @@ describe('Redis-backed split API + worker integration', () => {
   beforeEach(async () => {
     redis = new FakeRedis();
     repository = new RedisJobRepository(redis, testConfig);
-    queue = new RedisJobQueue(redis);
+    queue = new RedisJobQueue(redis, testConfig.VISIBILITY_TIMEOUT_MS);
     workerPool = new WorkerPool(
       queue,
       repository,
@@ -149,7 +149,7 @@ describe('Redis-backed split API + worker integration', () => {
     await queue.enqueue(orphanId);
     workerPool.start();
 
-    // Give the worker time to dequeue and skip the missing job
+    // Give the worker time to claim and skip the missing job
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     expect(await repository.findById(orphanId)).toBeNull();

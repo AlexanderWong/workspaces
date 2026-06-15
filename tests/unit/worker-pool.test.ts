@@ -154,7 +154,7 @@ describe('WorkerPool with Redis storage', () => {
   beforeEach(() => {
     redis = new FakeRedis();
     repository = new RedisJobRepository(redis, testConfig);
-    queue = new RedisJobQueue(redis);
+    queue = new RedisJobQueue(redis, testConfig.VISIBILITY_TIMEOUT_MS);
     workerPool = new WorkerPool(
       queue,
       repository,

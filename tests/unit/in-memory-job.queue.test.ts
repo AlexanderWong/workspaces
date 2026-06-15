@@ -8,21 +8,21 @@ describe('InMemoryJobQueue', () => {
     await queue.enqueue('job-1');
     await queue.enqueue('job-2');
 
-    expect(await queue.dequeue(100)).toBe('job-1');
-    expect(await queue.dequeue(100)).toBe('job-2');
-    expect(await queue.dequeue(100)).toBeNull();
+    expect(await queue.claim(100)).toBe('job-1');
+    expect(await queue.claim(100)).toBe('job-2');
+    expect(await queue.claim(100)).toBeNull();
   });
 
   it('does not lose jobs when a dequeue times out before enqueue', async () => {
     const queue = new InMemoryJobQueue();
 
-    const timedOut = queue.dequeue(10);
+    const timedOut = queue.claim(10);
     await new Promise((resolve) => setTimeout(resolve, 25));
 
     expect(await timedOut).toBeNull();
 
     await queue.enqueue('job-1');
 
-    expect(await queue.dequeue(100)).toBe('job-1');
+    expect(await queue.claim(100)).toBe('job-1');
   });
 });

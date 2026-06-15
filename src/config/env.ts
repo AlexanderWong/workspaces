@@ -17,6 +17,12 @@ const envSchema = z.object({
     .transform((value) => value === 'true'),
   /** Redis connection URL — required when API and workers run as separate processes */
   REDIS_URL: z.string().url().optional(),
+  /** How long a claimed job may run before the reaper requeues it (crash recovery) */
+  VISIBILITY_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  /** How often the worker process scans for expired in-flight jobs */
+  REAPER_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
+  /** Max time to wait for in-flight jobs to finish before nacking on shutdown */
+  SHUTDOWN_DRAIN_MS: z.coerce.number().int().positive().default(10_000),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { RedisJobQueue } from '../../src/queue/redis-job.queue';
 import { RedisJobRepository } from '../../src/repositories/redis-job.repository';
 import { FakeRedis } from '../helpers/fake-redis';
 import { testConfig } from '../helpers/test-config';
@@ -6,15 +7,23 @@ import { testConfig } from '../helpers/test-config';
 describe('RedisJobRepository', () => {
   let redis: FakeRedis;
   let repository: RedisJobRepository;
+  let queue: RedisJobQueue;
 
   beforeEach(() => {
     redis = new FakeRedis();
     repository = new RedisJobRepository(redis, testConfig);
+    queue = new RedisJobQueue(redis, testConfig.VISIBILITY_TIMEOUT_MS);
   });
 
   afterEach(() => {
     redis.clear();
   });
+
+  async function claimJob(jobId: string): Promise<void> {
+    await queue.enqueue(jobId);
+    const claimed = await queue.claim(1000);
+    expect(claimed).toBe(jobId);
+  }
 
   it('creates a job with queued status and persists it in Redis', async () => {
     const job = await repository.create({ sleepMs: 100, data: { task: 'redis' } });
@@ -33,10 +42,18 @@ describe('RedisJobRepository', () => {
 
   it('rejects markRunning when the job is not queued', async () => {
     const job = await repository.create({ sleepMs: 10 });
+    await claimJob(job.id);
     await repository.markRunning(job.id);
 
     const secondClaim = await repository.markRunning(job.id);
     expect(secondClaim).toBeNull();
+  });
+
+  it('rejects markRunning when the job is not in-flight', async () => {
+    const job = await repository.create({ sleepMs: 10 });
+
+    const running = await repository.markRunning(job.id);
+    expect(running).toBeNull();
   });
 
   it('rejects markCompleted when the job is not running', async () => {
@@ -62,6 +79,7 @@ describe('RedisJobRepository', () => {
 
   it('transitions a job through queued → running → completed', async () => {
     const job = await repository.create({ sleepMs: 10 });
+    await claimJob(job.id);
 
     const running = await repository.markRunning(job.id);
     expect(running?.status).toBe('running');
@@ -82,6 +100,7 @@ describe('RedisJobRepository', () => {
 
   it('requeues a running job and increments retryCount', async () => {
     const job = await repository.create({ sleepMs: 10 });
+    await claimJob(job.id);
     await repository.markRunning(job.id);
 
     const requeued = await repository.requeueForRetry(job.id, 'transient outage');
@@ -95,10 +114,13 @@ describe('RedisJobRepository', () => {
   it('returns null from requeueForRetry when max retries are exceeded', async () => {
     const config = { ...testConfig, MAX_JOB_RETRIES: 1 };
     repository = new RedisJobRepository(redis, config);
+    queue = new RedisJobQueue(redis, config.VISIBILITY_TIMEOUT_MS);
 
     const job = await repository.create({ sleepMs: 10 });
+    await claimJob(job.id);
     await repository.markRunning(job.id);
     await repository.requeueForRetry(job.id, 'retry 1');
+    await claimJob(job.id);
     await repository.markRunning(job.id);
 
     const exhausted = await repository.requeueForRetry(job.id, 'retry 2');

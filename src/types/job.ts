@@ -68,7 +68,12 @@ export interface JobRepository {
 /** Async handoff between HTTP submission and background workers */
 export interface JobQueue {
   enqueue(jobId: string): Promise<void>;
-  dequeue(timeoutMs: number): Promise<string | null>;
+  /** Claim the next job id and register it as in-flight (Redis uses a visibility deadline). */
+  claim(timeoutMs: number): Promise<string | null>;
+  /** Return a running job to the queue during graceful shutdown. */
+  nack(jobId: string): Promise<void>;
+  /** Requeue in-flight jobs whose visibility deadline expired. */
+  reapExpired(): Promise<number>;
   size(): number;
 }
 

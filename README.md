@@ -11,8 +11,9 @@ Designed for deployment to **GitHub** (with CI) and **DigitalOcean App Platform*
 - **Status API** — `GET /api/v1/jobs/:id` returns `queued`, `running`, `completed`, or `failed` plus result/error
 - **Web dashboard** — simple UI at `/` to submit jobs, poll status, and inspect results
 - **Health check** — `GET /health` for load balancers and App Platform probes
-- **Concurrency control** — mutex-protected job state and queue operations
+- **Concurrency control** — mutex-protected in-memory state; Lua-atomic Redis transitions in production
 - **Automated retries** — transient failures are retried with configurable backoff; permanent failures fail immediately
+- **Production-safe Redis queue** — claim semantics, visibility timeouts, crash-recovery reaper, graceful shutdown, and dead-letter queue
 - **Split deployment** — API and worker run as separate DigitalOcean components sharing Redis
 
 ## Architecture
@@ -27,47 +28,75 @@ sequenceDiagram
     participant Service
     participant Repo as Job Repository
     participant Queue as Job Queue
+    participant Redis as Redis
     participant Worker as Worker Pool
+    participant Reaper
     participant Processor as Mock Processor
 
     Client->>HTTP: POST /api/v1/jobs payload
     HTTP->>Controller: submit(req.body)
     Controller->>Service: submitJob(payload)
     Service->>Repo: create(payload), status queued
+    Repo->>Redis: SET job:{id}
     Service->>Queue: enqueue(jobId)
+    Queue->>Redis: LPUSH jobs:queue
     Service-->>Controller: job
     Controller-->>Client: 202 Accepted with job id and status
 
-    Note over Repo,Queue: In-memory locally, Redis when REDIS_URL is set
-    Note over Worker,Processor: Decoupled background execution
+    Note over Repo,Queue,Redis: In-memory locally; Redis + Lua scripts when REDIS_URL is set
 
-    loop Each worker concurrency N
-        Worker->>Queue: dequeue(pollIntervalMs)
-        Queue-->>Worker: jobId or null
-        Worker->>Repo: markRunning(jobId)
-        Worker->>Processor: process(job.payload)
-        alt Success
-            Processor-->>Worker: result
-            Worker->>Repo: markCompleted(jobId, result)
-        else Transient failure retries remaining
-            Processor-->>Worker: TransientProcessingError
-            Worker->>Repo: requeueForRetry(jobId)
-            Note over Worker: backoff RETRY_BACKOFF_MS
-            Worker->>Queue: enqueue(jobId)
-        else Permanent failure or max retries exceeded
-            Processor-->>Worker: error
-            Worker->>Repo: markFailed(jobId, error)
+    par Reaper (crash recovery)
+        loop Every REAPER_INTERVAL_MS
+            Reaper->>Queue: reapExpired()
+            Queue->>Redis: requeue jobs past visibility deadline
+        end
+    and Worker pool
+        loop Each worker (concurrency N)
+            Worker->>Queue: claim(pollIntervalMs)
+            Queue->>Redis: Lua RPOP jobs:queue + ZADD jobs:inflight
+            Queue-->>Worker: jobId or null
+            Worker->>Repo: markRunning(jobId)
+            Repo->>Redis: Lua SET running + extend inflight deadline
+            Worker->>Processor: process(job.payload)
+            alt Success
+                Processor-->>Worker: result
+                Worker->>Repo: markCompleted(jobId, result)
+                Repo->>Redis: Lua SET completed + ZREM jobs:inflight
+            else Transient failure retries remaining
+                Processor-->>Worker: TransientProcessingError
+                Worker->>Repo: requeueForRetry(jobId)
+                Repo->>Redis: Lua SET queued + ZREM jobs:inflight
+                Note over Worker: backoff RETRY_BACKOFF_MS
+                Worker->>Queue: enqueue(jobId)
+                Queue->>Redis: LPUSH jobs:queue
+            else Permanent failure or max retries exceeded
+                Processor-->>Worker: error
+                Worker->>Repo: markFailed(jobId, error)
+                Repo->>Redis: Lua SET failed + ZREM inflight + LPUSH jobs:dlq
+            end
         end
     end
+
+    Note over Worker,Queue: SIGTERM shutdown drains SHUTDOWN_DRAIN_MS then nack() returns in-flight jobs to queue
 
     Client->>HTTP: GET /api/v1/jobs/:id
     HTTP->>Controller: getStatus(id)
     Controller->>Service: getJob(id)
     Service->>Repo: findById(id)
+    Repo->>Redis: GET job:{id}
     Repo-->>Service: job
     Service-->>Controller: job
     Controller-->>Client: 200 status result or error
 ```
+
+### Redis keys (production)
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `jobs:queue` | LIST | Job IDs waiting to be claimed (FIFO) |
+| `jobs:inflight` | ZSET | Claimed job IDs with visibility deadline scores |
+| `jobs:dlq` | LIST | Permanently failed job IDs for ops inspection |
+| `job:{id}` | STRING | Full job JSON record (status, payload, result, error) |
 
 ### Layer responsibilities
 
@@ -77,9 +106,10 @@ sequenceDiagram
 | `controllers/` | Request/response mapping |
 | `services/` | Business logic (submit, lookup) |
 | `storage/` | Factory — in-memory (local) or Redis (split deploy) |
-| `repositories/` | Job persistence (mutex-protected in-memory; Redis in production) |
-| `queue/` | Async FIFO job queue (mutex-protected in-memory; Redis in production) |
-| `workers/` | Worker pool and job processor |
+| `repositories/` | Job persistence (mutex in-memory; Lua-atomic transitions in Redis) |
+| `queue/` | Job handoff (mutex in-memory; claim/inflight/reaper in Redis) |
+| `redis/` | Lua scripts and Redis key constants |
+| `workers/` | Worker pool, reaper loop, graceful shutdown, and job processor |
 | `concurrency/` | `AsyncMutex` for safe in-memory shared-state access |
 
 ### Concurrency control
@@ -87,7 +117,10 @@ sequenceDiagram
 HTTP handlers and background workers share the same job store and queue. Locally (no `REDIS_URL`), both live in process memory; in split deploy, API and worker processes share Redis via `createJobStorage()`.
 
 - **In-memory (local dev)** — repository and queue operations run inside `AsyncMutex.runExclusive()` blocks so concurrent HTTP polls and worker updates cannot interleave.
-- **Redis (production)** — repository and queue use Redis commands; no in-process mutex is needed because state is externalized.
+- **Redis (production)** — repository and queue use Lua-scripted atomic transitions, an in-flight ZSET with visibility timeouts, a reaper for crash recovery, and a dead-letter queue for permanent failures.
+- **Claim semantics** — `claim()` atomically moves a job from `jobs:queue` to `jobs:inflight` with a visibility deadline instead of destructively popping via `BRPOP`.
+- **Crash recovery** — a background reaper requeues in-flight jobs whose visibility deadline has passed (e.g. worker crash or OOM kill).
+- **Graceful shutdown** — on `SIGTERM`, workers drain for `SHUTDOWN_DRAIN_MS`, then `nack()` returns any remaining in-flight jobs to `jobs:queue` for the next worker instance.
 - **Status guards** — transitions enforce a strict lifecycle (`queued` → `running` → `completed`/`failed`); concurrent `markRunning` calls on the same job only succeed once.
 
 ## API
@@ -294,6 +327,9 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request 
 | `DEFAULT_JOB_SLEEP_MS` | `1000` | Default simulated work duration |
 | `MAX_JOB_RETRIES` | `3` | Max automatic retries for transient failures |
 | `RETRY_BACKOFF_MS` | `1000` | Delay before re-enqueueing a failed job |
+| `VISIBILITY_TIMEOUT_MS` | `120000` | How long a claimed job may run before the reaper requeues it (must exceed max job duration) |
+| `REAPER_INTERVAL_MS` | `5000` | How often workers scan for expired in-flight jobs |
+| `SHUTDOWN_DRAIN_MS` | `10000` | Graceful shutdown window before nacking in-flight jobs back to the queue |
 | `WORKERS_ENABLED` | `true` | Set `false` on API service when workers run separately |
 | `REDIS_URL` | — | Redis URL (required for split API/worker deployment) |
 
@@ -357,7 +393,7 @@ curl "$APP_URL/health"
 | **No authentication** | All endpoints are public |
 | **No rate limiting** | Unlimited job submission |
 | **Mock processor** | Work is simulated via `sleep`; replace `MockJobProcessor` for real workloads |
-| **Best-effort shutdown** | In-flight jobs may be interrupted on deploy/restart |
+| **Long jobs vs. visibility** | Jobs running longer than `VISIBILITY_TIMEOUT_MS` may be requeued; tune the timeout or add heartbeat extension for very long work |
 
 ## License
 
