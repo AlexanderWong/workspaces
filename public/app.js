@@ -1,5 +1,6 @@
 const API_PREFIX = '/api/v1';
 const POLL_INTERVAL_MS = 750;
+const MAX_POLL_ERRORS = 15;
 
 const submitForm = document.getElementById('submit-form');
 const lookupForm = document.getElementById('lookup-form');
@@ -14,6 +15,7 @@ const healthIndicator = document.getElementById('health-indicator');
 
 let activeJobId = null;
 let pollTimer = null;
+let pollErrorCount = 0;
 const sessionJobs = [];
 
 function formatTimestamp(value) {
@@ -135,21 +137,39 @@ async function refreshActiveJob() {
 
   try {
     const job = await fetchJob(activeJobId);
+    pollErrorCount = 0;
     renderJob(job);
+    setMessage(submitMessage, '');
 
     if (job.status === 'completed' || job.status === 'failed') {
       stopPolling();
     }
   } catch (error) {
-    setMessage(submitMessage, error.message, 'error');
-    stopPolling();
+    pollErrorCount += 1;
+
+    if (pollErrorCount >= MAX_POLL_ERRORS) {
+      setMessage(submitMessage, error.message, 'error');
+      stopPolling();
+      return;
+    }
+
+    setMessage(
+      submitMessage,
+      `Waiting for job status... (attempt ${pollErrorCount}/${MAX_POLL_ERRORS})`,
+      '',
+    );
   }
 }
 
-function startPolling(jobId) {
+function startPolling(jobId, { immediate = true } = {}) {
   stopPolling();
   activeJobId = jobId;
-  void refreshActiveJob();
+  pollErrorCount = 0;
+
+  if (immediate) {
+    void refreshActiveJob();
+  }
+
   pollTimer = setInterval(() => {
     void refreshActiveJob();
   }, POLL_INTERVAL_MS);
@@ -216,8 +236,8 @@ submitForm.addEventListener('submit', async (event) => {
 
     const job = body.data;
     renderJob(job);
-    setMessage(submitMessage, `Job ${job.id} queued.`, 'success');
-    startPolling(job.id);
+    setMessage(submitMessage, `Job ${job.id} queued. Checking status...`, 'success');
+    startPolling(job.id, { immediate: false });
   } catch (error) {
     setMessage(submitMessage, error.message, 'error');
   } finally {
