@@ -416,26 +416,6 @@ The existing `JobRepository` / `JobQueue` split makes this a contained change: s
 6. **Deploy** — add a Managed PostgreSQL cluster on DigitalOcean; bind `DATABASE_URL` to API and worker components in `.do/app.yaml`. Redis stays for queue coordination only.
 7. **Follow-ups** — job listing endpoint (`GET /jobs?status=failed`), retention job (delete completed rows older than N days), DLQ replay tooling.
 
-#### Proposed schema
-
-```sql
-CREATE TABLE jobs (
-  id            UUID PRIMARY KEY,
-  status        TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed')),
-  payload       JSONB NOT NULL,
-  result        JSONB,
-  error         TEXT,
-  retry_count   INT NOT NULL DEFAULT 0,
-  max_retries   INT NOT NULL DEFAULT 3,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  started_at    TIMESTAMPTZ,
-  completed_at  TIMESTAMPTZ
-);
-
-CREATE INDEX jobs_status_created_idx ON jobs (status, created_at DESC);
-```
-
 #### What stays the same
 
 - `JobQueue` / `RedisJobQueue` — claim semantics, reaper, graceful shutdown, DLQ
